@@ -8,6 +8,110 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
     header("Location: ../auth/login.php");
     exit;
 }
+
+/** 
+ * ==========================================
+ * 1. QUERY INTEGRASI DATA REAL-TIME (PDO)
+ * ==========================================
+ */
+
+try {
+    // A. Total Pendapatan & Transaksi Selesai
+    $query_stats = "SELECT 
+                        SUM(CASE WHEN status_pembayaran = 'selesai' THEN total_harga ELSE 0 END) as total_revenue,
+                        COUNT(CASE WHEN status_pembayaran = 'selesai' THEN id END) as total_completed
+                    FROM transaksi";
+    $stmt_stats = $pdo->query($query_stats);
+    $stats = $stmt_stats->fetch();
+
+    $total_revenue = $stats['total_revenue'] ?? 0;
+    $total_completed = $stats['total_completed'] ?? 0;
+
+    // B. Efisiensi & Status Armada
+    $query_armada = "SELECT 
+                        COUNT(CASE WHEN status_mobil = 'jalan' THEN id END) as armada_jalan,
+                        COUNT(CASE WHEN status_mobil = 'tersedia' THEN id END) as armada_tersedia,
+                        COUNT(CASE WHEN status_mobil = 'maintenance' THEN id END) as armada_maintenance,
+                        COUNT(id) as total_armada
+                     FROM mobil";
+    $stmt_armada = $pdo->query($query_armada);
+    $armada = $stmt_armada->fetch();
+
+    $armada_jalan = $armada['armada_jalan'] ?? 0;
+    $armada_tersedia = $armada['armada_tersedia'] ?? 0;
+    $armada_maintenance = $armada['armada_maintenance'] ?? 0;
+    $total_armada = $armada['total_armada'] ?? 1;
+
+    $efisiensi_persen = ($total_armada > 0) ? round(($armada_jalan / $total_armada) * 100) : 0;
+
+    // C. Data Grafik Omset Mingguan (7 Hari Terakhir)
+    $grafik_omset_labels = [];
+    $grafik_omset_data = [];
+    for ($i = 6; $i >= 0; $i--) {
+        $date_string = date('Y-m-d', strtotime("-$i days"));
+        $label_string = date('d M', strtotime("-$i days"));
+        
+        $query_omset_harian = "SELECT SUM(total_harga) as total FROM transaksi WHERE status_pembayaran = 'selesai' AND DATE(tanggal_transaksi) = :date_string";
+        $stmt_harian = $pdo->prepare($query_omset_harian);
+        $stmt_harian->execute(['date_string' => $date_string]);
+        $data_harian = $stmt_harian->fetch();
+        
+        $grafik_omset_labels[] = $label_string;
+        $grafik_omset_data[] = (int)($data_harian['total'] ?? 0);
+    }
+
+    // D. Data Grafik Volume Pesanan Mingguan (Travel vs Rental Supir vs Lepas Kunci)
+    $hari_nama = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+    $data_travel = [0, 0, 0, 0, 0, 0, 0];
+    $data_rental = [0, 0, 0, 0, 0, 0, 0]; // Gabungan rental_supir & lepas_kunci agar bagan tetap sinkron
+
+    $query_layanan = "SELECT 
+                        DAYOFWEEK(tanggal_transaksi) as hari, 
+                        jenis_layanan, 
+                        COUNT(id) as jumlah 
+                      FROM transaksi 
+                      WHERE tanggal_transaksi >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                      GROUP BY hari, jenis_layanan";
+    $stmt_layanan = $pdo->query($query_layanan);
+    while ($row = $stmt_layanan->fetch()) {
+        // Konversi index hari PHP (1 = Minggu, 2 = Senin...) ke urutan array (Senin=0 ... Minggu=6)
+        $idx = ($row['hari'] == 1) ? 6 : $row['hari'] - 2;
+        if ($row['jenis_layanan'] == 'travel') {
+            $data_travel[$idx] = (int)$row['jumlah'];
+        } else {
+            // Menggabungkan rental_supir dan lepas_kunci ke kelompok rental
+            $data_rental[$idx] += (int)$row['jumlah'];
+        }
+    }
+
+    // E. Penyebaran Tipe/Merk Kendaraan
+    $query_tipe = "SELECT merk, COUNT(*) as jumlah FROM mobil GROUP BY merk";
+    $stmt_tipe = $pdo->query($query_tipe);
+    $tipe_labels = [];
+    $tipe_data = [];
+    while ($row = $stmt_tipe->fetch()) {
+        $tipe_labels[] = $row['merk'];
+        $tipe_data[] = (int)$row['jumlah'];
+    }
+
+    // F. Log Mobil Masuk Masa Maintenance
+    $query_alert_maintenance = "SELECT merk, plat_nomor FROM mobil WHERE status_mobil = 'maintenance' LIMIT 3";
+    $stmt_alert = $pdo->query($query_alert_maintenance);
+    $alert_list = $stmt_alert->fetchAll();
+
+    // G. Evaluasi Rating Supir Real-Time dari Tabel review_supir
+    // Catatan: Jika ada tabel master `supir` untuk mengambil nama supir, query ini bisa di-JOIN nantinya. 
+    // Sementara mengambil ID supir dan komentarnya.
+    $query_rating = "SELECT r.rating_diberikan as rating, r.komentar as ulasan, r.created_at, r.supir_id 
+                     FROM review_supir r 
+                     ORDER BY r.created_at DESC LIMIT 4";
+    $stmt_rating = $pdo->query($query_rating);
+    $result_rating = $stmt_rating->fetchAll();
+
+} catch (PDOException $e) {
+    // Jika ada error query, tampilkan pesan aman agar dashboard tidak crash total
+    echo "<script>console.error('Database Error: " . addslashes($e->getMessage()) . "');</script>";
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -49,12 +153,10 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
       h1, h2, h3, .serif { font-family: "Cormorant Garamond", serif; }
       body { font-family: "Montserrat", sans-serif; }
       
-      /* Animasi Transisi Konten Utama */
       .fade-in { animation: fadeIn 0.6s ease-out forwards; }
       @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
       
-      /* Animasi Meluncur Aktif dari Kanan ke Kiri untuk Panel Anggaran & Perawatan */
-      .slide-in-right { opacity: 0; animation: slideIn 1.2s cubic-bezier(0.19, 1, 0.22, 1) forwards; }
+      .slide-in-right { animation: slideIn 1.2s cubic-bezier(0.19, 1, 0.22, 1) forwards; }
       @keyframes slideIn { from { opacity: 0; transform: translateX(60px); } to { opacity: 1; transform: translateX(0); } }
     </style>
 </head>
@@ -77,6 +179,7 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
             </button>
         </div>
 
+        <!-- Row 1: Statistik Utama -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div class="bg-brand-cardlight p-6 rounded-2xl border border-gray-100 shadow-sm dark:bg-brand-carddark dark:border-zinc-800">
                 <p class="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-1">Total Pendapatan</p>
@@ -92,7 +195,7 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
                 <div>
                     <p class="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-1">Efisiensi Bulanan</p>
                     <h3 class="text-2xl font-bold mb-1">Armada Aktif</h3>
-                    <p class="text-xs text-gray-400">Target: 80% Unit Beroperasi</p>
+                    <p class="text-xs text-gray-400">Target: 80% Unit Beroperasi (Saat Ini: <?php echo $efisiensi_persen; ?>%)</p>
                 </div>
                 <div class="w-24 h-24 relative">
                     <canvas id="chartSemiPie"></canvas>
@@ -100,6 +203,7 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
             </div>
         </div>
 
+        <!-- Row 2: Grafik Utama -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
             <div class="lg:col-span-2 bg-brand-cardlight p-6 rounded-2xl border border-gray-100 shadow-sm dark:bg-brand-carddark dark:border-zinc-800">
                 <div class="flex justify-between items-center mb-4">
@@ -119,6 +223,7 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
             </div>
         </div>
 
+        <!-- Row 3: Detail Logistik & Fitur Baru (Evaluasi Rating) -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div class="bg-brand-cardlight p-6 rounded-2xl border border-gray-100 shadow-sm dark:bg-brand-carddark dark:border-zinc-800">
                 <h4 class="text-lg font-semibold font-serif italic mb-4">Penyebaran Tipe Kendaraan</h4>
@@ -127,31 +232,49 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
                 </div>
             </div>
 
+            <!-- Panel Evaluasi Rating Supir -->
             <div class="bg-brand-cardlight p-6 rounded-2xl border border-gray-100 shadow-sm dark:bg-brand-carddark dark:border-zinc-800 slide-in-right">
-                <h4 class="text-lg font-semibold font-serif italic mb-4">Penyerapan Dana Pemasaran</h4>
-                <div class="space-y-4">
-                    <div>
-                        <div class="flex justify-between text-xs mb-1"><span>Iklan Google Digital Travel</span><span class="font-bold">69%</span></div>
-                        <div class="w-full bg-gray-100 h-2 rounded-full dark:bg-zinc-700"><div class="bg-brand-accent h-full rounded-full transition-all duration-1000 ease-out" id="bar-dana-1" style="width: 0%"></div></div>
-                    </div>
-                    <div>
-                        <div class="flex justify-between text-xs mb-1"><span>Promosi Media Sosial</span><span class="font-bold">78%</span></div>
-                        <div class="w-full bg-gray-100 h-2 rounded-full dark:bg-zinc-700"><div class="bg-brand-blue h-full rounded-full transition-all duration-1000 ease-out" id="bar-dana-2" style="width: 0%"></div></div>
-                    </div>
+                <h4 class="text-lg font-semibold font-serif italic mb-2">Evaluasi Performa Supir</h4>
+                <p class="text-[11px] text-gray-400 mb-4">Rating & Masukan pengguna secara real-time</p>
+                <div class="space-y-3 max-h-56 overflow-y-auto pr-1">
+                    <?php if (!empty($result_rating)): ?>
+                        <?php foreach($result_rating as $row_rate): ?>
+                            <div class="border-b border-gray-50 pb-2 dark:border-zinc-800/50 last:border-0">
+                                <div class="flex justify-between items-center mb-1">
+                                    <span class="text-xs font-bold">Supir ID: <?php echo htmlspecialchars($row_rate['supir_id']); ?></span>
+                                    <span class="text-xs text-amber-500 font-bold">★ <?php echo number_format($row_rate['rating'], 1); ?></span>
+                                </div>
+                                <p class="text-[11px] text-gray-500 italic dark:text-gray-400">"<?php echo htmlspecialchars($row_rate['ulasan'] ?: 'Tanpa ulasan teks'); ?>"</p>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <p class="text-xs text-gray-400 text-center py-8">Belum ada data rating masuk.</p>
+                    <?php endif; ?>
                 </div>
             </div>
 
+            <!-- Status Logistik Pemeliharaan -->
             <div class="bg-brand-cardlight p-6 rounded-2xl border border-gray-100 shadow-sm dark:bg-brand-carddark dark:border-zinc-800 flex flex-col justify-between slide-in-right">
                 <div>
                     <span class="text-[10px] text-red-500 font-bold uppercase tracking-wider block mb-2">Status Logistik Sistem</span>
-                    <div class="flex items-center gap-3 bg-red-50 p-3 rounded-xl dark:bg-red-950/30">
-                        <div class="p-2 bg-red-500 text-white rounded-lg">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-                        </div>
-                        <div>
-                            <p class="text-xs font-bold">Pemeliharaan Armada</p>
-                            <p class="text-[10px] text-gray-400">3 Unit Isuzu Elf terdeteksi masuk masa ganti oli berkala.</p>
-                        </div>
+                    <div class="space-y-2">
+                        <?php if(!empty($alert_list)): ?>
+                            <?php foreach($alert_list as $alert): ?>
+                                <div class="flex items-center gap-3 bg-red-50 p-3 rounded-xl dark:bg-red-950/30">
+                                    <div class="p-2 bg-red-500 text-white rounded-lg shrink-0">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-xs font-bold"><?php echo htmlspecialchars($alert['merk']); ?></p>
+                                        <p class="text-[10px] text-gray-400">Unit (<?php echo htmlspecialchars($alert['plat_nomor']); ?>) sedang dalam masa maintenance berkala.</p>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <div class="flex items-center gap-3 bg-emerald-50 p-3 rounded-xl dark:bg-emerald-950/30">
+                                <p class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Semua unit armada dalam kondisi prima.</p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
                 <button class="w-full bg-brand-blue text-white text-[10px] uppercase font-bold tracking-widest py-3 rounded-xl mt-4 hover:bg-blue-600 transition">Lihat Seluruh Log Perawatan</button>
@@ -162,10 +285,10 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
     <?php include '../../components/footer.php'; ?>
 
     <script>
-        // 1. ENGINE COUNTER ANGKA
+        // 1. ENGINE COUNTER OPERASIONAL
         function animateCounter(id, target, isCurrency = false) {
             let current = 0;
-            const duration = 1500;
+            const duration = 1200;
             const stepTime = 20;
             const steps = duration / stepTime;
             const increment = target / steps;
@@ -182,30 +305,23 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
             }, stepTime);
         }
 
-        animateCounter('count-revenue', 48295000, true);
-        animateCounter('count-orders', 1284, false);
-
-        // Memicu Bar kemajuan setelah komponen bergeser masuk
-        setTimeout(() => {
-            document.getElementById('bar-dana-1').style.width = '69%';
-            document.getElementById('bar-dana-2').style.width = '78%';
-        }, 300);
+        animateCounter('count-revenue', <?php echo $total_revenue; ?>, true);
+        animateCounter('count-orders', <?php echo $total_completed; ?>, false);
 
 
         // ====================================================================
-        // 2. ENGINE ANIMASI DIAGRAM REAL-TIME (KINETIK PROGRESSIVE)
+        // 2. DIAGRAM ENGINE INTERAKTIF
         // ====================================================================
         
-        // Data Sumber untuk Diagram Garis
-        const targetLabelsGaris = ['10 Apr', '11 Apr', '12 Apr', '13 Apr', '14 Apr', '15 Apr', '16 Apr'];
-        const targetDataGaris   = [12000000, 24000000, 18000000, 31000000, 23000000, 35000000, 42000000];
+        // A. DIAGRAM GARIS: Omset Layanan Real-time 7 Hari Terakhir
+        const targetLabelsGaris = <?php echo json_encode($grafik_omset_labels); ?>;
+        const targetDataGaris   = <?php echo json_encode($grafik_omset_data); ?>;
 
         const ctxGaris = document.getElementById('chartGaris').getContext('2d');
         const gradienGaris = ctxGaris.createLinearGradient(0, 0, 0, 250);
         gradienGaris.addColorStop(0, 'rgba(5, 150, 105, 0.4)');
         gradienGaris.addColorStop(1, 'rgba(5, 150, 105, 0)');
 
-        // DIAGRAM GARIS: Diinisialisasi KOSONG agar titik bisa digambar meluncur ke kanan
         const chartGaris = new Chart(ctxGaris, {
             type: 'line',
             data: {
@@ -228,18 +344,13 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: { legend: { display: false } },
-                animation: {
-                    duration: 450, // Durasi luncuran titik antar koordinat (Sangat Halus)
-                    easing: 'easeOutQuad'
-                },
                 scales: {
-                    y: { min: 0, max: 50000000, grid: { display: false }, ticks: { font: { size: 10 } } },
+                    y: { min: 0, grid: { display: false }, ticks: { font: { size: 10 } } },
                     x: { grid: { display: false }, ticks: { font: { size: 10 } } }
                 }
             }
         });
 
-        // FUNGSI UTAMA: Membuat titik berjalan maju ke depan secara berkala (Star Trailing Effect)
         let dataIndex = 0;
         function renderLineProgressive() {
             if (dataIndex < targetDataGaris.length) {
@@ -247,54 +358,49 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
                 chartGaris.data.datasets[0].data.push(targetDataGaris[dataIndex]);
                 chartGaris.update();
                 dataIndex++;
-                setTimeout(renderLineProgressive, 350); // Kecepatan luncuran titik ke titik berikutnya
+                setTimeout(renderLineProgressive, 200);
             }
         }
-        // Jalankan efek bintang berjalan setelah struktur dashboard termuat
-        setTimeout(renderLineProgressive, 500);
+        setTimeout(renderLineProgressive, 300);
 
 
-        // B. DIAGRAM BATANG: Diinisialisasi dari angka 0, lalu meroket tumbuh elastis ke atas
+        // B. DIAGRAM BATANG: Volume Pesanan Mingguan (Travel vs Rental)
         const chartBatang = new Chart(document.getElementById('chartBatang'), {
             type: 'bar',
             data: {
-                labels: ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'],
+                labels: <?php echo json_encode($hari_nama); ?>,
                 datasets: [
-                    { label: 'Travel', data: [0, 0, 0, 0, 0, 0, 0], backgroundColor: '#059669', borderRadius: 6 },
-                    { label: 'Rental', data: [0, 0, 0, 0, 0, 0, 0], backgroundColor: '#3b82f6', borderRadius: 6 }
+                    { label: 'Travel', data: [0,0,0,0,0,0,0], backgroundColor: '#059669', borderRadius: 6 },
+                    { label: 'Rental', data: [0,0,0,0,0,0,0], backgroundColor: '#3b82f6', borderRadius: 6 }
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: { legend: { display: true, labels: { font: { size: 10 } } } },
-                animation: {
-                    duration: 2000,
-                    easing: 'easeOutElastic' // Efek pegas elastis murni dari bawah ke atas
-                },
+                animation: { duration: 1200, easing: 'easeOutQuart' },
                 scales: {
-                    y: { max: 100, grid: { display: false }, ticks: { font: { size: 10 } } },
+                    y: { beginAtZero: true, grid: { display: false }, ticks: { font: { size: 10 } } },
                     x: { grid: { display: false }, ticks: { font: { size: 10 } } }
                 }
             }
         });
 
-        // Picu pertumbuhan diagram batang sesaat setelah inisialisasi awal
         setTimeout(() => {
-            chartBatang.data.datasets[0].data = [40, 35, 55, 30, 70, 85, 90];
-            chartBatang.data.datasets[1].data = [20, 25, 30, 45, 50, 65, 60];
+            chartBatang.data.datasets[0].data = <?php echo json_encode($data_travel); ?>;
+            chartBatang.data.datasets[1].data = <?php echo json_encode($data_rental); ?>;
             chartBatang.update();
-        }, 600);
+        }, 500);
 
 
-        // C. DIAGRAM LINGKARAN: Diinisialisasi dari 0, mekar melingkar berputar dari titik tengah
+        // C. DIAGRAM LINGKARAN: Master Data Tipe Kendaraan
         const chartLingkaran = new Chart(document.getElementById('chartLingkaran'), {
             type: 'pie',
             data: {
-                labels: ['Mobil Pribadi', 'Elf / Microbus', 'Bus Pariwisata'],
+                labels: <?php echo json_encode($tipe_labels); ?>,
                 datasets: [{
                     data: [0, 0, 0],
-                    backgroundColor: ['#059669', '#3b82f6', '#f59e0b'],
+                    backgroundColor: ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899'],
                     borderWidth: 0
                 }]
             },
@@ -302,58 +408,58 @@ if (!isset($_SESSION['id_user']) || $_SESSION['role'] !== 'admin') {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: { legend: { display: true, position: 'bottom', labels: { font: { size: 10 } } } },
-                animation: {
-                    animateScale: true,  // Mekar mengembang dari 0% di titik tengah
-                    animateRotate: true, // Berputar dinamis secara simultan
-                    duration: 1800,
-                    easing: 'easeOutBack'
-                }
+                animation: { animateScale: true, animateRotate: true, duration: 1200 }
             }
         });
 
-        // Picu pemekaran diagram lingkaran dari poros tengah
         setTimeout(() => {
-            chartLingkaran.data.datasets[0].data = [50, 30, 20];
+            chartLingkaran.data.datasets[0].data = <?php echo json_encode($tipe_data); ?>;
             chartLingkaran.update();
-        }, 700);
+        }, 600);
 
 
-        // D. DIAGRAM TARGET SEMI PIE
+        // D. DIAGRAM TARGET SEMI PIE: Armada Aktif (Jalan vs Tersedia)
         new Chart(document.getElementById('chartSemiPie'), {
             type: 'doughnut',
             data: {
-                labels: ['Aktif', 'Standby'],
-                datasets: [{ data: [65, 35], backgroundColor: ['#059669', '#e4e4e7'], borderWidth: 0 }]
+                labels: ['Jalan', 'Tersedia'],
+                datasets: [{ 
+                    data: [<?php echo $armada_jalan; ?>, <?php echo $armada_tersedia; ?>], 
+                    backgroundColor: ['#059669', '#e4e4e7'], 
+                    borderWidth: 0 
+                }]
             },
             options: {
-                responsive: true, maintainAspectRatio: false,
+                responsive: true, 
+                maintainAspectRatio: false,
                 plugins: { legend: { display: false } },
-                rotation: -90, circumference: 180, cutout: '75%',
-                animation: { animateScale: true, duration: 2000, easing: 'easeOutBack' }
+                rotation: -90, 
+                circumference: 180, 
+                cutout: '75%'
             }
         });
 
-        // --- 3. LOGIKA TEMA GELAP/TERANG ---
+
+        // 3. LOGIKA TEMA GELAP/TERANG (SMOOTH TRANSITION)
         const themeToggle = document.getElementById('theme-toggle');
         const themeIconSun = document.getElementById('theme-icon-sun');
         const themeIconMoon = document.getElementById('theme-icon-moon');
 
-        const currentTheme = localStorage.getItem('theme') || 'light';
-        document.documentElement.classList.add(currentTheme);
-        if (currentTheme === 'dark') {
+        if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
             themeIconSun.classList.add('hidden');
             themeIconMoon.classList.remove('hidden');
+        } else {
+            document.documentElement.classList.remove('dark');
+            themeIconSun.classList.remove('hidden');
+            themeIconMoon.classList.add('hidden');
         }
 
         themeToggle.addEventListener('click', () => {
-            document.documentElement.classList.toggle('dark');
+            const isDark = document.documentElement.classList.toggle('dark');
             themeIconSun.classList.toggle('hidden');
             themeIconMoon.classList.toggle('hidden');
-            
-            let theme = 'light';
-            if (document.documentElement.classList.contains('dark')) { theme = 'dark'; }
-            localStorage.setItem('theme', theme);
-            setTimeout(() => { location.reload(); }, 150);
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
         });
     </script>
 </body>
