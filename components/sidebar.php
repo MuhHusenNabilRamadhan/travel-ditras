@@ -47,7 +47,7 @@ $role = $_SESSION['role'] ?? 'pembeli';
             <a href="/DITRAS-SYSTEM/pages/pembeli/rental-supir/form-sewa.php" class="block px-4 py-3 rounded text-xs font-semibold text-stone-300 hover:bg-emerald-600 hover:text-white transition">Sewa Mobil + Supir</a>
             <a href="/DITRAS-SYSTEM/pages/pembeli/lepas-kunci/form-booking.php" class="block px-4 py-3 rounded text-xs font-semibold text-stone-300 hover:bg-emerald-600 hover:text-white transition">Rental Lepas Kunci</a>
             <p class="text-[9px] uppercase tracking-widest text-stone-500 mt-6 mb-2 px-2">Fitur Tambahan</p>
-            <a href="/DITRAS-SYSTEM/pages/pembeli/lepas-kunci/riwayat.php" class="block px-4 py-3 rounded text-xs font-semibold text-stone-300 hover:bg-emerald-600 hover:text-white transition">Riwayat Transaksi</a>
+            <a href="/DITRAS-SYSTEM/pages/pembeli/riwayat.php" class="block px-4 py-3 rounded text-xs font-semibold text-stone-300 hover:bg-emerald-600 hover:text-white transition">Riwayat Transaksi</a>
             <a href="/DITRAS-SYSTEM/pages/pembeli/aspirasi/form.php" class="block px-4 py-3 rounded text-xs font-semibold text-stone-300 hover:bg-emerald-600 hover:text-white transition">Usulan Rute Baru</a>
         <?php endif; ?>
     </nav>
