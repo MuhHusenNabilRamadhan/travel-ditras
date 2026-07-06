@@ -131,7 +131,7 @@ if (!isset($_SESSION['id_user'])) {
                     </p>
                 </div>
                 <div>
-                    <a href="../invoice/utama.php" class="w-full text-center inline-block bg-slate-900 hover:bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl transition shadow-sm">
+                    <a href="riwayat.php" class="w-full text-center inline-block bg-slate-900 hover:bg-emerald-600 text-white text-xs font-semibold py-3 rounded-xl transition shadow-sm">
                         Lihat Semua Riwayat
                     </a>
                 </div>
